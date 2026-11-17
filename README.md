@@ -97,6 +97,18 @@ orchestrator restarts.
 | `X3_NO_SWAP=1` skips the per-tensor host copy before quantizing | swap still happens |
 | `--dist-peer host:port` splits a module's tensor groups with a remote worker | everything stays local |
 
+The patch targets commit `151539c`. Two notes for anyone rebasing it onto a
+later exllamav3:
+
+* Upstream commit `b658e643` added `--no_swap` and turns it on automatically on
+  integrated GPUs (it names GB10), so the `X3_NO_SWAP` half of this patch is
+  only needed on older checkouts.
+* Upstream commit `256287f3` added a capture-only fast path for block-sparse
+  layers with every expert active, which targets the same `capture` phase this
+  kit reports. A conversion on a newer checkout should be faster than the
+  numbers in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md), which were taken on
+  `151539c`.
+
 ## Limitations
 
 * If the worker dies the orchestrator aborts; there is no silent fallback to
