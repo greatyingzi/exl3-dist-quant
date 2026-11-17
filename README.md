@@ -83,7 +83,7 @@ Wait for `[peer] listening on 9311`. Then on the orchestrator:
 
 ```bash
 SRC=/models/Sage-S2.1-Flash-FP8 OUT=/models/Sage-3bpw WD=/tmp/orch-wd \
-  PEER=10.0.0.1:9311 X3_NO_SWAP=1 ./scripts/quantize_orchestrator.sh
+  PEER=192.168.1.20:9311 X3_NO_SWAP=1 ./scripts/quantize_orchestrator.sh
 ```
 
 Add `EXTRA_ARGS=-r` to resume from a checkpoint. The worker stays up across
