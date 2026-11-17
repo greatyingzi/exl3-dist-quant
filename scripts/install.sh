@@ -10,7 +10,7 @@ CM="$TARGET/exllamav3/conversion/convert_model.py"
 
 echo "applying patch to $CM"
 git -C "$TARGET" apply --check "$HERE/patch/0001-distributed-quantization.patch" \
-  || { echo "patch does not apply cleanly; is the checkout at 151539c?" >&2; exit 1; }
+  || { echo "patch does not apply cleanly; is the checkout at v1.6.7 (8c593e4e)?" >&2; exit 1; }
 git -C "$TARGET" apply "$HERE/patch/0001-distributed-quantization.patch"
 
 echo "installing dist_worker.py"

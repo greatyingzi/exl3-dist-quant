@@ -51,7 +51,7 @@ save, checkpoint
 
 ## Requirements
 
-* exllamav3 at commit `151539c` (the patch is generated against it)
+* exllamav3 at **v1.6.7** (`8c593e4e`), which the patch is generated against
 * two machines, each able to hold one module of the model plus quantization
   buffers in GPU memory
 * the **same source model on both machines** — the worker loads modules from its
@@ -93,21 +93,19 @@ orchestrator restarts.
 
 | Change | Default behaviour |
 | --- | --- |
-| `[phases]` line per module: load / capture / prep / quantize / save / advance | unchanged, logging only |
-| `X3_NO_SWAP=1` skips the per-tensor host copy before quantizing | swap still happens |
 | `--dist-peer host:port` splits a module's tensor groups with a remote worker | everything stays local |
+| `[phases]` line per module: load / capture / quantize / advance | unchanged, logging only |
 
-The patch targets commit `151539c`. Two notes for anyone rebasing it onto a
-later exllamav3:
+The patch is purely additive against v1.6.7 (153 added lines, none removed).
 
-* Upstream commit `b658e643` added `--no_swap` and turns it on automatically on
-  integrated GPUs (it names GB10), so the `X3_NO_SWAP` half of this patch is
-  only needed on older checkouts.
-* Upstream commit `256287f3` added a capture-only fast path for block-sparse
-  layers with every expert active, which targets the same `capture` phase this
-  kit reports. A conversion on a newer checkout should be faster than the
-  numbers in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md), which were taken on
-  `151539c`.
+The numbers in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) were taken on an
+earlier checkout (`151539c`) with an equivalent patch. Upstream `256287f3`
+later added a capture-only fast path for block-sparse layers with every expert
+active, which targets the same `capture` phase the `[phases]` line reports and
+claims a further 1.6x on that phase; a conversion on v1.6.7 should therefore be
+faster than those numbers. The CPU-swap workaround that older checkouts needed
+is upstream as `--no_swap` (auto-enabled on integrated GPUs) since
+`b658e643`, so it is not part of this patch.
 
 ## Limitations
 

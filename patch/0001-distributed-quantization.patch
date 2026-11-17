@@ -1,18 +1,18 @@
 diff --git a/exllamav3/conversion/convert_model.py b/exllamav3/conversion/convert_model.py
-index 2fa4ccf..23339c5 100644
+index c916011a..760a34af 100644
 --- a/exllamav3/conversion/convert_model.py
 +++ b/exllamav3/conversion/convert_model.py
-@@ -24,6 +24,9 @@ import threading
- from pathlib import Path
- from collections import deque
- import re
+@@ -25,6 +25,9 @@ from .allocation import create_q_strategy, create_q_strategy_from_recipe, print_
+ from ..loader.safetensors_alt import save_file, safe_open
+ import os, shutil
+ import json
 +import io
 +import socket
 +import struct
- 
- col_default = "\u001b[0m"
- col_red = "\u001b[31;1m"
-@@ -83,6 +86,7 @@ parser.add_argument("-ngb", "--ngram_bits", type = int, default = None, help = "
+ import threading
+ from pathlib import Path
+ from collections import deque
+@@ -88,6 +91,7 @@ parser.add_argument("-ngb", "--ngram_bits", type = int, default = None, help = "
  parser.add_argument("-eb", "--embed_bits", type = int, default = None, help = "Bits per weight, token embedding table: 1-8, or 16 to store unquantized, default: 16")
  parser.add_argument("-ngf", "--ngram_file", type = str, default = None, help = "Pre-quantized n-gram table file (from util/convert_ngram.py) to use instead of quantizing the table")
  parser.add_argument("-r", "--resume", action = "store_true", help = "Resume interrupted job from working directory")
@@ -20,10 +20,32 @@ index 2fa4ccf..23339c5 100644
  parser.add_argument("-cd", "--cal_data", type = str, default = None, help = "Calibration data file (safetensors with packed token rows, e.g. from sc_trace.py) used instead of the bundled corpus mix")
  parser.add_argument("-cr", "--cal_rows", type = int, help = "Calibration data size, rows, default: 250")
  parser.add_argument("-cc", "--cal_cols", type = int, help = "Calibration data size, columns, default: 2048")
-@@ -111,6 +115,127 @@ progress_lock = threading.Lock()
- curr_progress = 0
- max_progress = 0
+@@ -363,6 +367,7 @@ def prepare(args) -> (dict, dict, bool, str):
+     if in_args["hessians_one_sided"] and not in_args["hessians"]:
+         return None, None, False, "--hessians_one_sided needs --hessians"
+     in_args["max_module"] = args.max_module
++    in_args["dist_peer"] = args.dist_peer
  
+     if args.resume:
+         job_state = load_dict("ckpt/job.json", in_args)
+@@ -1301,6 +1306,127 @@ def host_rss_str():
+         return ""
+ 
+ 
++class PhaseTimer:
++    def __init__(self):
++        self.t = {}
++        self.mark = time.time()
++
++    def lap(self, name):
++        now = time.time()
++        self.t[name] = self.t.get(name, 0.0) + (now - self.mark)
++        self.mark = now
++
++    def line(self):
++        parts = " ".join(f"{k}={v:.1f}s" for k, v in self.t.items())
++        return f"   [phases] {parts} measured={sum(self.t.values()):.1f}s"
++
 +
 +class DistClient:
 +    def __init__(self, addr):
@@ -62,6 +84,7 @@ index 2fa4ccf..23339c5 100644
 +
 +
 +def dist_split_groups(linears, strategy, capture_H):
++    """Partition the module's quantization groups in two, balanced by weight count, keeping order."""
 +    groups = group_quant_linears(linears, strategy, capture_H)
 +    sizes = [sum(l.weights_numel() for l in g) for g in groups]
 +    order = sorted(range(len(groups)), key = lambda i: -sizes[i])
@@ -80,8 +103,8 @@ index 2fa4ccf..23339c5 100644
 +
 +
 +def dist_begin(client, idx, linears, strategy, capture_H):
-+    """Split the module's tensor groups and start the peer job in the background so the
-+    local half runs concurrently instead of after it."""
++    """Hand roughly half the groups to the peer and start it now; the local half runs
++    while the peer works, so the two are concurrent rather than sequential."""
 +    mine, theirs = dist_split_groups(linears, strategy, capture_H)
 +    if not theirs or not mine:
 +        return None
@@ -130,33 +153,10 @@ index 2fa4ccf..23339c5 100644
 +    return tens, st["peer_keys"], st["mine"]
 +
 +
-+class PhaseTimer:
-+    def __init__(self):
-+        self.t = {}
-+        self.mark = time.time()
-+
-+    def lap(self, name):
-+        now = time.time()
-+        self.t[name] = self.t.get(name, 0.0) + (now - self.mark)
-+        self.mark = now
-+
-+    def line(self):
-+        parts = " ".join(f"{k}={v:.1f}s" for k, v in self.t.items())
-+        return f"   [phases] {parts} measured={sum(self.t.values()):.1f}s"
-+
-+
- def check_system():
-     if os.environ.get("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE") is not None:
+ def feedback_module(state, module, config, final_bpw, error, cos_error, sqnr_, module_time):
+     if state:
          print(
-@@ -313,6 +438,7 @@ def prepare(args) -> (dict, dict, bool, str):
-     if in_args["hessians_one_sided"] and not in_args["hessians"]:
-         return None, None, False, "--hessians_one_sided needs --hessians"
-     in_args["max_module"] = args.max_module
-+    in_args["dist_peer"] = args.dist_peer
- 
-     if args.resume:
-         job_state = load_dict("ckpt/job.json", in_args)
-@@ -1197,6 +1323,9 @@ def main(args, job_state):
+@@ -1406,6 +1532,9 @@ def main(args, job_state):
                  print(f" -- Auto device split: {line}")
  
      last_checkpoint_time = time.time()
@@ -166,75 +166,53 @@ index 2fa4ccf..23339c5 100644
  
      # Get model
      config, model, mtp_model, vision_model, tokenizer, use_reference_state = get_base_model(args)
-@@ -1294,6 +1423,7 @@ def main(args, job_state):
-         get_temp_buffers.cache_clear()
+@@ -1516,6 +1645,7 @@ def main(args, job_state):
          free_mem()
  
-+        pt = PhaseTimer()
          start_module_time = time.time()
++        pt = PhaseTimer()
          if idx == model.first_block_idx:
              timed_blocks = 0
-@@ -1342,6 +1472,7 @@ def main(args, job_state):
+ 
+@@ -1561,6 +1691,7 @@ def main(args, job_state):
+                 if m.used_alt_key and not slicing:
+                     print(f"     - Cloned {m.key} from {m.alt_key}")
              module.config.stc.close()
- 
-             # Skip modules without quant targets
 +            pt.lap("load")
-             qmaps = module.get_qmaps()
-             if len(qmaps) > 0:
  
-@@ -1412,6 +1543,7 @@ def main(args, job_state):
-                                         bad_rows.add(i)
-                                         print(f" !! Non-finite reference state in calibration row {i}, excluding row")
-                                 rs = None
+             aff_store = None
+ 
+@@ -1651,6 +1782,7 @@ def main(args, job_state):
+                     if aff_stores:
+                         aff_store = merge_affinity_stores(aff_stores)
+                         aff_stores = None
 +                    pt.lap("capture")
                      print(f" -- Captured: {module.key}" + slice_str, flush = True)
  
                      # More feedback
-@@ -1445,28 +1577,44 @@ def main(args, job_state):
-             image_dump(args, linears)
+@@ -1700,15 +1832,30 @@ def main(args, job_state):
+                     quantize_linears_single(
+                         args, linears_, config, strategy, idx, devices, eff_ratios("quant_tiles"), capture_H_, state, out_sens)
  
-             # Move original tensors to system RAM (load to GPU one by one when quantizing)
--            for linear in linears:
--                linear.inner.swap_cpu()
-+            if not os.environ.get("X3_NO_SWAP"):
-+                for linear in linears:
-+                    linear.inner.swap_cpu()
- 
-             # Output sensitivity of the gate and up projections (auto output scales)
-             out_sens = finalize_out_sensitivity(capture_sens) if capture_sens else None
-             capture_sens = None
-+            pt.lap("prep")
- 
-             # Quantize: one linear per device in parallel when the layer has enough
-             # tensors to occupy every device, else tile-split each tensor across devices
-             # (single large tensors, e.g. lm_head)
--            if (
--                len(linears) >= len(devices) and
--                all(strategy[l.key] <= 8 for l in linears)
++            # Distributed: hand roughly half the groups to a peer, then quantize the rest here
 +            peer_tensors = None
 +            peer_keys = set()
-+            linears_local = linears
 +            dist_st = None
-+            if dist_client is not None and len(linears) > 1:
++            if dist_client is not None and aff_store is None and len(linears) > 1:
 +                dist_st = dist_begin(dist_client, idx, linears, strategy, capture_H)
 +                if dist_st is not None:
 +                    peer_keys = dist_st["peer_keys"]
-+                    linears_local = dist_st["mine"]
-+            if linears_local and (
-+                len(linears_local) >= len(devices) and
-+                all(strategy[l.key] <= 8 for l in linears_local)
-             ):
-                 quantize_linears_parallel(
--                    args, linears, config, strategy, idx, devices, eff_ratios("quant_thread"), capture_H, state, out_sens)
--            else:
-+                    args, linears_local, config, strategy, idx, devices, eff_ratios("quant_thread"), capture_H, state, out_sens)
-+            elif linears_local:
-                 quantize_linears_single(
--                    args, linears, config, strategy, idx, devices, eff_ratios("quant_tiles"), capture_H, state, out_sens)
-+                    args, linears_local, config, strategy, idx, devices, eff_ratios("quant_tiles"), capture_H, state, out_sens)
++                    linears = dist_st["mine"]
++
+             # Gate/up projections of experts with affinity-weighted Hessians: per expert, a few at a time
+             if aff_store is not None and aff_store["layers"]:
+                 linears = quantize_affinity_gate_up(module, linears, capture_H, aff_store, quantize_list, device)
+                 aff_store = None
+             if linears:
+                 quantize_list(linears, capture_H)
++                pt.lap("quantize")
 +            if dist_st is not None:
-+                peer_tensors, peer_keys, linears_local = dist_finish(dist_st)
-+            pt.lap("quantize")
++                peer_tensors, peer_keys, linears = dist_finish(dist_st)
  
              # Collect converted module tensors
              for m in module:
@@ -243,59 +221,23 @@ index 2fa4ccf..23339c5 100644
                  if m is module and isinstance(m, Embedding) and m.allow_table and args["embed_bits"] < 16:
                      tensors, rfn = quantize_embedding(m.key, m.embedding.weight.data, args["embed_bits"], device)
                      print(f" -- Quantized: {m.key}  bpw: {args['embed_bits']}  rfn: {rfn:.6f}")
-@@ -1474,15 +1622,16 @@ def main(args, job_state):
+@@ -1716,6 +1863,9 @@ def main(args, job_state):
                  else:
                      q_tensors.update(m.get_tensors())
  
--            # Unload module
--            if not module.caps.get("retain_during_quant"):
--                module.unload()
 +            if peer_tensors:
 +                q_tensors.update(peer_tensors)
-             capture_H = None
-             config.stc.close()
-+            pt.lap("collect")
- 
-         # Save layer tensors to working directory
-         clear_temp_files(args)
-         save_tensor(q_tensors, f"qtensors/{module.key}.safetensors", args)
-+        pt.lap("save")
- 
-         # Output final bpw for layer
-         num_bytes = dsize(q_tensors)
-@@ -1502,6 +1651,7 @@ def main(args, job_state):
-                 replica_models, idx, devices, None, source = q_tensors)
-         config.stc.set_new_tensors(None)
-         del q_tensors
-+        pt.lap("reload_q")
- 
-         # Advance state
-         error = 0
-@@ -1567,6 +1717,7 @@ def main(args, job_state):
++
+             # Unload module
+             if not module.caps.get("retain_during_quant"):
+                 module.unload()
+@@ -1812,6 +1962,9 @@ def main(args, job_state):
                  sqnr_ /= n
                  check_bad_rows(bad_rows, len(state))
  
 +        pt.lap("advance")
++        print(pt.line(), flush = True)
++
          # Feedback after module. Trim first so the reported RSS reflects what the job actually
          # retains, not what the allocator happens to be holding
          malloc_trim()
-@@ -1575,6 +1726,7 @@ def main(args, job_state):
-         report_auto_split()
-         feedback_eta(idx, model, module_time)
- 
-+        print(pt.line(), flush = True)
-         # Unload current module
-         if not module.caps.get("retain_during_quant"):
-             module.unload()
-@@ -1635,8 +1787,9 @@ def main(args, job_state):
-             image_dump(args, linears)
- 
-             # Move original tensors to system RAM (load to GPU one by one when quantizing)
--            for linear in linears:
--                linear.inner.swap_cpu()
-+            if not os.environ.get("X3_NO_SWAP"):
-+                for linear in linears:
-+                    linear.inner.swap_cpu()
- 
-             # Quantize (same dispatch as the main loop)
-             if (
