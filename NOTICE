@@ -1,0 +1,10 @@
+This repository contains a patch against and code that depends on:
+
+  exllamav3 — https://github.com/turboderp-org/exllamav3
+  MIT License, Copyright (c) 2025 Turboderp
+
+The patch in patch/ modifies exllamav3's conversion/convert_model.py and adds
+conversion/dist_worker.py. Those files remain under exllamav3's MIT license.
+The patch is based on commit 151539c.
+
+exllamav3 is not bundled here; it must be obtained from its own repository.
