@@ -14,6 +14,11 @@ Measured on Sage-S2.1-Flash (321B MoE, 45 routed-expert layers), 3.0 bpw mcg,
 
 Outputs are bit-identical to a local run; see [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
 
+The checkpoint produced this way is published at
+[androidli/Sage-S2.1-Flash-EXL3-3.0bpw](https://huggingface.co/androidli/Sage-S2.1-Flash-EXL3-3.0bpw):
+321B MoE, routed experts at 3.0 bpw MCG, everything else bfloat16, 138 GiB over 17 shards,
+served on two machines at 33-37 tok/s.
+
 ## The problem it solves
 
 `convert_model.py` advances a calibration state through every module it has just
