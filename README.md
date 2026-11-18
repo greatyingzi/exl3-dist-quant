@@ -118,6 +118,15 @@ faster than those numbers. The CPU-swap workaround that older checkouts needed
 is upstream as `--no_swap` (auto-enabled on integrated GPUs) since
 `b658e643`, so it is not part of this patch.
 
+## Turning the output into a loadable pack
+
+This kit splits the conversion; it does not change what `convert.py` produces, and that output is
+not directly what a serving engine wants. The mismatch is invisible to a header-level check of
+the result — only an actual load finds it. [docs/PACK_FORMAT.md](docs/PACK_FORMAT.md) lists the
+five things that bit us on the first attempt: fused attention tensors, float16 vs bfloat16,
+a stale `quantization_config.json`, dropped `auto_map` modules, and the fact that `-b`
+quantizes attention as well as the experts.
+
 ## Limitations
 
 * If the worker dies the orchestrator aborts; there is no silent fallback to
