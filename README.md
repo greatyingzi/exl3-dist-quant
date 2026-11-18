@@ -89,6 +89,17 @@ SRC=/models/Sage-S2.1-Flash-FP8 OUT=/models/Sage-3bpw WD=/tmp/orch-wd \
 Add `EXTRA_ARGS=-r` to resume from a checkpoint. The worker stays up across
 orchestrator restarts.
 
+## Checking that nothing changed
+
+`scripts/compare_qtensors.py A B [--layer N]` compares two directories of
+per-layer qtensors bit for bit. It parses safetensors itself, so it needs no
+CUDA, no exllamav3 and no torch - it can run wherever the files are.
+
+`scripts/ab_quant_batch.sh` converts the same layers twice with different
+batched-group sizes (`--quant_batch_cols`, `--quant_stack`) and compares the
+result, which is how those limits can be raised without guessing whether the
+output moved.
+
 ## What the patch adds
 
 | Change | Default behaviour |
